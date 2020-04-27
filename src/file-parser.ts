@@ -10,31 +10,69 @@ const VARIABLE_REGEXP = /variable\s*"(.+)"/;
 const OVERRIDE_PATTERN = '// override';
 const CLOSING_CURLY_BRACE = '}';
 
-interface ParentModule {
-  name: string;
-  source: string;
-  harcodedVariableNames: Set<string>;
+export type Variables = Map<string, string[]>;
+
+export interface VariableFile {
+  fileName: string;
+  variables: Variables;
 }
 
-export async function parseParentModulesFromMainFile(
+export interface Module {
+  name: string;
+  source: string;
+  endLineNumber: number;
+  harcodedVariableNames: Set<string>;
+  variableFiles: VariableFile[];
+}
+
+export async function parseOverrideVariablesFromGeneratedFile(
   filePath: string,
-): Promise<ParentModule[]> {
-  const modules: ParentModule[] = [];
-  let currentModule: ParentModule | null = null;
+): Promise<Variables> {
+  return parseVariableFile(filePath, true);
+}
+
+export async function findModules(
+  absoluteChildModuleFolderPath: string,
+  fileName: string,
+): Promise<Module[]> {
+  const modules = await parseModulesFromMainFile(
+    path.resolve(absoluteChildModuleFolderPath, fileName),
+  );
+
+  if (!modules.length) {
+    throw new Error('NO_MODULE_FOUND');
+  }
+
+  return Promise.all(
+    modules.map(async (module) => ({
+      ...module,
+      variableFiles: await parseModuleVariableFiles(
+        path.resolve(absoluteChildModuleFolderPath, module.source),
+      ),
+    })),
+  );
+}
+
+async function parseModulesFromMainFile(filePath: string): Promise<Module[]> {
+  const modules: Module[] = [];
+  let currentModule: Module | null = null;
 
   await readFileLineByLine(
     filePath,
-    (line: string) => {
+    (line: string, lineNumber: number) => {
       const moduleName = parseLine(line, MODULE_NAME_REGEXP);
 
       if (moduleName) {
         currentModule = {
           name: moduleName,
           source: '',
+          endLineNumber: -1,
           harcodedVariableNames: new Set(),
+          variableFiles: [],
         };
       } else if (currentModule) {
         if (line.trimRight() === CLOSING_CURLY_BRACE) {
+          currentModule.endLineNumber = lineNumber;
           modules.push(currentModule);
           currentModule = null;
         } else {
@@ -60,43 +98,26 @@ export async function parseParentModulesFromMainFile(
   return modules;
 }
 
-export async function parseRedifinedVariablesFromGeneratedFile(
-  filePath: string,
-): Promise<Map<string, string[]>> {
-  return parseVariablesFromFile(filePath, true);
-}
-
-export async function findAndParseParentModuleVariablesFiles(
-  absoluteChildModuleFolderPath: string,
-  relativeParentModuleFolderPath: string,
-): Promise<
-  Array<{
-    relativeFilePath: string;
-    variables: Map<string, string[]>;
-  }>
-> {
-  const absoluteParentModuleFolderPath = path.resolve(
-    absoluteChildModuleFolderPath,
-    relativeParentModuleFolderPath,
-  );
-
+async function parseModuleVariableFiles(
+  absoluteModuleFolderPath: string,
+): Promise<VariableFile[]> {
   const fileNames: string[] = (
-    await fs.promises.readdir(absoluteParentModuleFolderPath)
+    await fs.promises.readdir(absoluteModuleFolderPath)
   ).filter((x) => x.startsWith('variables'));
 
   return (
     await Promise.all(
       fileNames.map((x) =>
-        parseVariablesFromFile(path.join(absoluteParentModuleFolderPath, x)),
+        parseVariableFile(path.join(absoluteModuleFolderPath, x)),
       ),
     )
   ).map((variables, i) => ({
-    relativeFilePath: path.join(relativeParentModuleFolderPath, fileNames[i]),
+    fileName: fileNames[i],
     variables,
   }));
 }
 
-async function parseVariablesFromFile(
+async function parseVariableFile(
   filePath: string,
   filterOnOverride: boolean = false,
 ): Promise<Map<string, string[]>> {
