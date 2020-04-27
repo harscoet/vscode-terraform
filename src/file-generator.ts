@@ -43,8 +43,6 @@ export async function generateFile(
       ),
     ]);
 
-    console.log(Array.from(generatedFileData));
-
     const stream = fs.createWriteStream(generatedFilePath, {
       encoding: 'utf8',
     });
