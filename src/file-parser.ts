@@ -32,27 +32,8 @@ export async function parseParentModulesFromMainFile(
 export async function parseRedifinedVariablesFromGeneratedFile(
   filePath: string,
   delimiter: string,
-): Promise<{ lines: string[]; variableNames: Set<string> }> {
-  const lines: string[] = [];
-  const variableNames = new Set<string>();
-
-  await readFileLineByLine(
-    filePath,
-    (line: string) => {
-      lines.push(line);
-      const variableName = parseVariable(line);
-
-      if (variableName) {
-        variableNames.add(variableName);
-      }
-    },
-    delimiter,
-  );
-
-  return {
-    lines,
-    variableNames,
-  };
+): Promise<Map<string, string[]>> {
+  return parseVariablesFromFile(filePath, delimiter);
 }
 
 export async function findAndParseParentModuleVariablesFiles(
@@ -76,9 +57,7 @@ export async function findAndParseParentModuleVariablesFiles(
   return (
     await Promise.all(
       fileNames.map((x) =>
-        parseVariablesFromParentModuleFile(
-          path.join(absoluteParentModuleFolderPath, x),
-        ),
+        parseVariablesFromFile(path.join(absoluteParentModuleFolderPath, x)),
       ),
     )
   ).map((variables, i) => ({
@@ -87,30 +66,35 @@ export async function findAndParseParentModuleVariablesFiles(
   }));
 }
 
-async function parseVariablesFromParentModuleFile(
+async function parseVariablesFromFile(
   filePath: string,
+  delimiter?: string,
 ): Promise<Map<string, string[]>> {
   const variables = new Map<string, string[]>();
   let currentVariableName: string | null = null;
 
-  await readFileLineByLine(filePath, (line: string) => {
-    const variableName = parseVariable(line);
+  await readFileLineByLine(
+    filePath,
+    (line: string) => {
+      const variableName = parseVariableName(line);
 
-    if (variableName) {
-      currentVariableName = variableName;
-      variables.set(variableName, [line]);
-    } else if (currentVariableName && line.trim()) {
-      variables.set(
-        currentVariableName,
-        (variables.get(currentVariableName) ?? []).concat(line),
-      );
-    }
-  });
+      if (variableName) {
+        currentVariableName = variableName;
+        variables.set(variableName, [line]);
+      } else if (currentVariableName && line.trim()) {
+        variables.set(
+          currentVariableName,
+          (variables.get(currentVariableName) ?? []).concat(line),
+        );
+      }
+    },
+    delimiter,
+  );
 
   return variables;
 }
 
-function parseVariable(text: string): string | null {
+function parseVariableName(text: string): string | null {
   return parseText(text, VARIABLE_REGEXP);
 }
 

@@ -52,8 +52,10 @@ export async function generateFile(
 
     stream.on('finish', () => resolve(generatedFilePath));
 
-    if (generatedFileData.lines.length) {
-      streamWriteWithNewline(stream, ...generatedFileData.lines);
+    if (generatedFileData.size) {
+      for (const variableLines of generatedFileData.values()) {
+        streamWriteWithNewline(stream, ...variableLines, '');
+      }
     }
 
     for (let i = 0; i < parentModulesData.length; i++) {
@@ -72,7 +74,7 @@ export async function generateFile(
         for (const [variableName, variableLines] of variables) {
           streamWriteWithNewline(
             stream,
-            ...(generatedFileData.variableNames.has(variableName)
+            ...(generatedFileData.has(variableName)
               ? commentLines(variableLines)
               : variableLines),
           );
