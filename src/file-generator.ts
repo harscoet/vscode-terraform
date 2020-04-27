@@ -5,7 +5,7 @@ import {
   parseRedifinedVariablesFromGeneratedFile,
   findAndParseParentModuleVariablesFiles,
 } from './file-parser';
-import { streamWriteWithNewline, commentLines } from './util';
+import { streamWriteWithNewline } from './util';
 
 const GENERATED_LINE_PREFIX = '# MODULE';
 const GENERATED_FILE_NAME = 'variables-inherited.tf';
@@ -29,10 +29,7 @@ export async function generateFile(
     );
 
     const [generatedFileData, parentModulesData] = await Promise.all([
-      parseRedifinedVariablesFromGeneratedFile(
-        generatedFilePath,
-        GENERATED_LINE_PREFIX,
-      ),
+      parseRedifinedVariablesFromGeneratedFile(generatedFilePath),
       Promise.all(
         Array.from(parentModules).map(
           async ([parentModuleName, relativeParentModuleFolderPath]) => ({
@@ -46,17 +43,13 @@ export async function generateFile(
       ),
     ]);
 
+    console.log(Array.from(generatedFileData));
+
     const stream = fs.createWriteStream(generatedFilePath, {
       encoding: 'utf8',
     });
 
     stream.on('finish', () => resolve(generatedFilePath));
-
-    if (generatedFileData.size) {
-      for (const variableLines of generatedFileData.values()) {
-        streamWriteWithNewline(stream, ...variableLines, '');
-      }
-    }
 
     for (let i = 0; i < parentModulesData.length; i++) {
       const { variablesByFilePath, parentModuleName } = parentModulesData[i];
@@ -72,11 +65,11 @@ export async function generateFile(
         );
 
         for (const [variableName, variableLines] of variables) {
+          const overrideVariableLines = generatedFileData.get(variableName);
+
           streamWriteWithNewline(
             stream,
-            ...(generatedFileData.has(variableName)
-              ? commentLines(variableLines)
-              : variableLines),
+            ...(overrideVariableLines ?? variableLines),
           );
         }
 

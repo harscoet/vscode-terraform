@@ -18,9 +18,13 @@ export function commentLines(lines: string[]) {
 export function readFileLineByLine(
   filePath: string,
   onLine: (line: string) => void,
-  endDelimiter?: string,
+  options?: {
+    endDelimiter?: string;
+    skipEmptyLines?: boolean;
+  },
 ): Promise<void> {
   return new Promise((resolve) => {
+    const { endDelimiter, skipEmptyLines } = options || {};
     const input = fs.createReadStream(filePath);
 
     input.on('error', () => {
@@ -35,7 +39,7 @@ export function readFileLineByLine(
       if (endDelimiter && line.startsWith(endDelimiter)) {
         rl.close();
         rl.removeAllListeners();
-      } else {
+      } else if (!skipEmptyLines || line.trim() !== '') {
         onLine(line);
       }
     });

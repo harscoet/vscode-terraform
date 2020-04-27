@@ -5,6 +5,7 @@ import { readFileLineByLine } from './util';
 const MODULE_NAME_REGEXP = /module\s*"(.+)"/;
 const MODULE_SOURCE_REGEXP = /source\s*=\s*"(.+)"/;
 const VARIABLE_REGEXP = /variable\s*"(.+)"/;
+const OVERRIDE_PATTERN = '// override';
 
 export async function parseParentModulesFromMainFile(
   filePath: string,
@@ -31,9 +32,8 @@ export async function parseParentModulesFromMainFile(
 
 export async function parseRedifinedVariablesFromGeneratedFile(
   filePath: string,
-  delimiter: string,
 ): Promise<Map<string, string[]>> {
-  return parseVariablesFromFile(filePath, delimiter);
+  return parseVariablesFromFile(filePath, true);
 }
 
 export async function findAndParseParentModuleVariablesFiles(
@@ -68,27 +68,43 @@ export async function findAndParseParentModuleVariablesFiles(
 
 async function parseVariablesFromFile(
   filePath: string,
-  delimiter?: string,
+  filterOnOverride: boolean = false,
 ): Promise<Map<string, string[]>> {
   const variables = new Map<string, string[]>();
   let currentVariableName: string | null = null;
+  let isOverride = !filterOnOverride;
 
   await readFileLineByLine(
     filePath,
     (line: string) => {
-      const variableName = parseVariableName(line);
+      if (filterOnOverride && line.startsWith(OVERRIDE_PATTERN)) {
+        isOverride = true;
+      } else {
+        const variableName = parseVariableName(line);
 
-      if (variableName) {
-        currentVariableName = variableName;
-        variables.set(variableName, [line]);
-      } else if (currentVariableName && line.trim()) {
-        variables.set(
-          currentVariableName,
-          (variables.get(currentVariableName) ?? []).concat(line),
-        );
+        if (variableName && isOverride) {
+          isOverride = !filterOnOverride;
+          currentVariableName = variableName;
+
+          variables.set(
+            variableName,
+            filterOnOverride ? [OVERRIDE_PATTERN, line] : [line],
+          );
+        } else if (currentVariableName) {
+          variables.set(
+            currentVariableName,
+            (variables.get(currentVariableName) ?? []).concat(line),
+          );
+
+          if (line.trim() === '}') {
+            currentVariableName = null;
+          }
+        }
       }
     },
-    delimiter,
+    {
+      skipEmptyLines: true,
+    },
   );
 
   return variables;
