@@ -19,7 +19,7 @@ export async function generateFile(
       path.resolve(absoluteChildModuleFolderPath, fileName),
     );
 
-    if (!parentModules.size) {
+    if (!parentModules.length) {
       return reject(new Error('NO_MODULE_FOUND'));
     }
 
@@ -28,18 +28,16 @@ export async function generateFile(
       GENERATED_FILE_NAME,
     );
 
-    const [generatedFileData, parentModulesData] = await Promise.all([
+    const [generatedFileVariables, parentModulesData] = await Promise.all([
       parseRedifinedVariablesFromGeneratedFile(generatedFilePath),
       Promise.all(
-        Array.from(parentModules).map(
-          async ([parentModuleName, relativeParentModuleFolderPath]) => ({
-            parentModuleName,
-            variablesByFilePath: await findAndParseParentModuleVariablesFiles(
-              absoluteChildModuleFolderPath,
-              relativeParentModuleFolderPath,
-            ),
-          }),
-        ),
+        parentModules.map(async (parentModule) => ({
+          ...parentModule,
+          variablesByFilePath: await findAndParseParentModuleVariablesFiles(
+            absoluteChildModuleFolderPath,
+            parentModule.source,
+          ),
+        })),
       ),
     ]);
 
@@ -50,20 +48,34 @@ export async function generateFile(
     stream.on('finish', () => resolve(generatedFilePath));
 
     for (let i = 0; i < parentModulesData.length; i++) {
-      const { variablesByFilePath, parentModuleName } = parentModulesData[i];
+      const {
+        variablesByFilePath,
+        name: moduleName,
+        harcodedVariableNames,
+      } = parentModulesData[i];
       const isLastModule = i === parentModulesData.length - 1;
 
       for (let j = 0; j < variablesByFilePath.length; j++) {
         const { relativeFilePath, variables } = variablesByFilePath[j];
         const isLastFile = j === variablesByFilePath.length - 1;
 
-        streamWriteWithNewline(
-          stream,
-          `${GENERATED_LINE_PREFIX} ${parentModuleName} FILE ${relativeFilePath}`,
+        const filteredVariables = Array.from(variables).filter(
+          (x) => !harcodedVariableNames.has(x[0]),
         );
 
-        for (const [variableName, variableLines] of variables) {
-          const overrideVariableLines = generatedFileData.get(variableName);
+        if (!filteredVariables.length) {
+          continue;
+        }
+
+        streamWriteWithNewline(
+          stream,
+          `${GENERATED_LINE_PREFIX} ${moduleName} FILE ${relativeFilePath}`,
+        );
+
+        for (const [variableName, variableLines] of filteredVariables) {
+          const overrideVariableLines = generatedFileVariables.get(
+            variableName,
+          );
 
           streamWriteWithNewline(
             stream,

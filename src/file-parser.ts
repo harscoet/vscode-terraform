@@ -4,28 +4,58 @@ import { readFileLineByLine } from './util';
 
 const MODULE_NAME_REGEXP = /module\s*"(.+)"/;
 const MODULE_SOURCE_REGEXP = /source\s*=\s*"(.+)"/;
+const MODULE_VARIABLE_REGEXP = /^\s{2}(?!source|version|count|for_each|lifecycle)\b(\w+)\s*=/;
 const VARIABLE_REGEXP = /variable\s*"(.+)"/;
+
 const OVERRIDE_PATTERN = '// override';
+const CLOSING_CURLY_BRACE = '}';
+
+interface ParentModule {
+  name: string;
+  source: string;
+  harcodedVariableNames: Set<string>;
+}
 
 export async function parseParentModulesFromMainFile(
   filePath: string,
-): Promise<Map<string, string>> {
-  const modules = new Map<string, string>();
-  let currentModuleName: string | null = null;
+): Promise<ParentModule[]> {
+  const modules: ParentModule[] = [];
+  let currentModule: ParentModule | null = null;
 
-  await readFileLineByLine(filePath, (line: string) => {
-    const moduleName = parseModuleName(line);
+  await readFileLineByLine(
+    filePath,
+    (line: string) => {
+      const moduleName = parseLine(line, MODULE_NAME_REGEXP);
 
-    if (moduleName) {
-      currentModuleName = moduleName;
-    } else if (currentModuleName) {
-      const moduleSource = parseModuleSource(line);
+      if (moduleName) {
+        currentModule = {
+          name: moduleName,
+          source: '',
+          harcodedVariableNames: new Set(),
+        };
+      } else if (currentModule) {
+        if (line.trimRight() === CLOSING_CURLY_BRACE) {
+          modules.push(currentModule);
+          currentModule = null;
+        } else {
+          const moduleSource = parseLine(line, MODULE_SOURCE_REGEXP);
 
-      if (moduleSource) {
-        modules.set(currentModuleName, moduleSource);
+          if (moduleSource) {
+            currentModule.source = moduleSource;
+          } else {
+            const variableName = parseLine(line, MODULE_VARIABLE_REGEXP);
+
+            if (variableName) {
+              currentModule.harcodedVariableNames.add(variableName);
+            }
+          }
+        }
       }
-    }
-  });
+    },
+    {
+      skipEmptyLines: true,
+    },
+  );
 
   return modules;
 }
@@ -80,7 +110,7 @@ async function parseVariablesFromFile(
       if (filterOnOverride && line.startsWith(OVERRIDE_PATTERN)) {
         isOverride = true;
       } else {
-        const variableName = parseVariableName(line);
+        const variableName = parseLine(line, VARIABLE_REGEXP);
 
         if (variableName && isOverride) {
           isOverride = !filterOnOverride;
@@ -96,7 +126,7 @@ async function parseVariablesFromFile(
             (variables.get(currentVariableName) ?? []).concat(line),
           );
 
-          if (line.trim() === '}') {
+          if (line.trimRight() === CLOSING_CURLY_BRACE) {
             currentVariableName = null;
           }
         }
@@ -110,19 +140,7 @@ async function parseVariablesFromFile(
   return variables;
 }
 
-function parseVariableName(text: string): string | null {
-  return parseText(text, VARIABLE_REGEXP);
-}
-
-function parseModuleName(text: string): string | null {
-  return parseText(text, MODULE_NAME_REGEXP);
-}
-
-function parseModuleSource(text: string): string | null {
-  return parseText(text, MODULE_SOURCE_REGEXP);
-}
-
-function parseText(text: string, regExp: RegExp): string | null {
+function parseLine(text: string, regExp: RegExp): string | null {
   const groups = regExp.exec(text);
 
   if (groups && groups.length > 1) {
