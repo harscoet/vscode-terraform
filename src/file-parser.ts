@@ -1,28 +1,140 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { readFileLineByLine } from './util';
+import { readFileLineByLine } from './file-util';
+import { USER_COMMENT_PREFIX, GENERATED_DELIMITER_PREFIX } from './constants';
+import { MainFile, Module, Variables, VariableFile } from './types';
+
+const OVERRIDE_PATTERN = `${USER_COMMENT_PREFIX} override`;
+const CLOSING_CURLY_BRACE = '}';
+const SOURCE_ATTRIBUTE = 'source';
+
+const RESERVED_ATTRIBUTES = [
+  SOURCE_ATTRIBUTE,
+  'version',
+  'count',
+  'for_each',
+  'lifecycle',
+];
 
 const MODULE_NAME_REGEXP = /module\s*"(.+)"/;
-const MODULE_SOURCE_REGEXP = /source\s*=\s*"(.+)"/;
-const MODULE_VARIABLE_REGEXP = /^\s{2}(?!source|version|count|for_each|lifecycle)\b(\w+)\s*=/;
-const VARIABLE_REGEXP = /variable\s*"(.+)"/;
+const VARIABLE_NAME_REGEXP = /variable\s*"(.+)"/;
+const VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP = /var\.(\w+)/g;
+const USER_COMMENT_PREFIX_REGEXP = new RegExp(`${USER_COMMENT_PREFIX}+\\s*`);
 
-const OVERRIDE_PATTERN = '// override';
-const CLOSING_CURLY_BRACE = '}';
+export async function parseMainFile(
+  folderPath: string,
+  filePath: string,
+): Promise<MainFile> {
+  const modules: Module[] = [];
+  const lines: MainFile.Line[] = [];
+  let currentModule: Module | null = null;
 
-export type Variables = Map<string, string[]>;
+  await readFileLineByLine(filePath, (lineValue: string) => {
+    const isEmptyLine = lineValue.trim() === '';
+    const prevLine = lines.length > 0 ? lines[lines.length - 1] : null;
+    const prevLineIsEmpty = prevLine?.value.trim() === '';
 
-export interface VariableFile {
-  fileName: string;
-  variables: Variables;
-}
+    if (isEmptyLine && prevLine && prevLineIsEmpty) {
+      return;
+    }
 
-export interface Module {
-  name: string;
-  source: string;
-  endLineNumber: number;
-  harcodedVariableNames: Set<string>;
-  variableFiles: VariableFile[];
+    if (!currentModule) {
+      const moduleName = matchRegexp(lineValue, MODULE_NAME_REGEXP);
+
+      if (moduleName) {
+        currentModule = {
+          name: moduleName,
+          source: '',
+          variableAttributes: new Map(),
+          variableNamesUsedInAttributeValues: new Set(),
+          variableFiles: [],
+        };
+      }
+    } else {
+      // End module
+      if (lineValue === CLOSING_CURLY_BRACE) {
+        modules.push(currentModule);
+        currentModule = null;
+        lines[lines.length - 1].isModuleEndLine = true;
+      }
+      // Generated delimiters
+      else if (lineValue.includes(GENERATED_DELIMITER_PREFIX)) {
+        lines.pop();
+        return;
+      }
+      // Module body attributes
+      else {
+        const attribute = parseLineToFindAttribute(lineValue);
+
+        if (attribute) {
+          if (attribute.key === SOURCE_ATTRIBUTE) {
+            currentModule.source = attribute.value.slice(1, -1);
+          } else if (
+            !RESERVED_ATTRIBUTES.includes(attribute.key) &&
+            attribute.indent === 2
+          ) {
+            const isCommented = attribute.key.includes(USER_COMMENT_PREFIX);
+
+            const variableName = isCommented
+              ? attribute.key.replace(USER_COMMENT_PREFIX_REGEXP, '')
+              : attribute.key;
+
+            const isPassThroughVariable =
+              attribute.value === `var.${variableName}`;
+
+            // Ignore non commented pass-through variables, we will rewrite them at the bottom of the file
+            if (!isCommented && isPassThroughVariable) {
+              return;
+            }
+
+            currentModule.variableAttributes.set(variableName, {
+              isCustom: !isPassThroughVariable,
+              isCommented,
+            });
+
+            // Skip line
+            if (isCommented && isPassThroughVariable) {
+              return;
+            }
+          }
+        }
+
+        for (const variableNameUsedInAttributeValue of matchAllRegexp(
+          lineValue,
+          VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP,
+        )) {
+          currentModule.variableNamesUsedInAttributeValues.add(
+            variableNameUsedInAttributeValue,
+          );
+        }
+      }
+    }
+
+    lines.push({
+      value: lineValue,
+      contextModuleName: currentModule?.name ?? null,
+    });
+  });
+
+  if (!modules.length) {
+    throw new Error('NO_MODULE_FOUND');
+  }
+
+  return {
+    folderPath,
+    filePath,
+    modules: (
+      await Promise.all(
+        modules.map(async (module) => ({
+          ...module,
+          variableFiles: await parseModuleVariableFiles(
+            path.resolve(folderPath, module.source),
+          ),
+        })),
+      )
+    ).reduce((acc, value) => acc.set(value.name, value), new Map()),
+    lines,
+  };
 }
 
 export async function parseOverrideVariablesFromGeneratedFile(
@@ -31,85 +143,16 @@ export async function parseOverrideVariablesFromGeneratedFile(
   return parseVariableFile(filePath, true);
 }
 
-export async function findModules(
-  absoluteChildModuleFolderPath: string,
-  fileName: string,
-): Promise<Module[]> {
-  const modules = await parseModulesFromMainFile(
-    path.resolve(absoluteChildModuleFolderPath, fileName),
-  );
-
-  if (!modules.length) {
-    throw new Error('NO_MODULE_FOUND');
-  }
-
-  return Promise.all(
-    modules.map(async (module) => ({
-      ...module,
-      variableFiles: await parseModuleVariableFiles(
-        path.resolve(absoluteChildModuleFolderPath, module.source),
-      ),
-    })),
-  );
-}
-
-async function parseModulesFromMainFile(filePath: string): Promise<Module[]> {
-  const modules: Module[] = [];
-  let currentModule: Module | null = null;
-
-  await readFileLineByLine(
-    filePath,
-    (line: string, lineNumber: number) => {
-      const moduleName = parseLine(line, MODULE_NAME_REGEXP);
-
-      if (moduleName) {
-        currentModule = {
-          name: moduleName,
-          source: '',
-          endLineNumber: -1,
-          harcodedVariableNames: new Set(),
-          variableFiles: [],
-        };
-      } else if (currentModule) {
-        if (line.trimRight() === CLOSING_CURLY_BRACE) {
-          currentModule.endLineNumber = lineNumber;
-          modules.push(currentModule);
-          currentModule = null;
-        } else {
-          const moduleSource = parseLine(line, MODULE_SOURCE_REGEXP);
-
-          if (moduleSource) {
-            currentModule.source = moduleSource;
-          } else {
-            const variableName = parseLine(line, MODULE_VARIABLE_REGEXP);
-
-            if (variableName) {
-              currentModule.harcodedVariableNames.add(variableName);
-            }
-          }
-        }
-      }
-    },
-    {
-      skipEmptyLines: true,
-    },
-  );
-
-  return modules;
-}
-
 async function parseModuleVariableFiles(
-  absoluteModuleFolderPath: string,
+  folderPath: string,
 ): Promise<VariableFile[]> {
   const fileNames: string[] = (
-    await fs.promises.readdir(absoluteModuleFolderPath)
+    await fs.promises.readdir(folderPath)
   ).filter((x) => x.startsWith('variables'));
 
   return (
     await Promise.all(
-      fileNames.map((x) =>
-        parseVariableFile(path.join(absoluteModuleFolderPath, x)),
-      ),
+      fileNames.map((x) => parseVariableFile(path.join(folderPath, x))),
     )
   ).map((variables, i) => ({
     fileName: fileNames[i],
@@ -131,7 +174,7 @@ async function parseVariableFile(
       if (filterOnOverride && line.startsWith(OVERRIDE_PATTERN)) {
         isOverride = true;
       } else {
-        const variableName = parseLine(line, VARIABLE_REGEXP);
+        const variableName = matchRegexp(line, VARIABLE_NAME_REGEXP);
 
         if (variableName && isOverride) {
           isOverride = !filterOnOverride;
@@ -161,12 +204,35 @@ async function parseVariableFile(
   return variables;
 }
 
-function parseLine(text: string, regExp: RegExp): string | null {
-  const groups = regExp.exec(text);
+function parseLineToFindAttribute(
+  line: string,
+): { key: string; value: string; indent: number } | null {
+  const parts = line.split('=');
 
-  if (groups && groups.length > 1) {
-    return groups[1];
+  if (parts.length > 1) {
+    return {
+      key: parts[0].trim(),
+      value: parts[1].trim(),
+      indent: parts[0].search(/\S/),
+    };
   }
 
   return null;
+}
+
+function matchRegexp(text: string, regexp: RegExp): string | null {
+  const matches = regexp.exec(text);
+
+  if (matches && matches.length > 1) {
+    return matches[1];
+  }
+
+  return null;
+}
+
+function matchAllRegexp(text: string, regexp: RegExp): string[] {
+  return Array.from(text.matchAll(regexp)).reduce(
+    (acc, x) => acc.concat(x[1]),
+    [],
+  );
 }

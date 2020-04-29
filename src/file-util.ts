@@ -1,23 +1,11 @@
-import { createInterface } from 'readline';
 import * as fs from 'fs';
+import { createInterface } from 'readline';
 
 const NEWLINE = '\n';
-const COMMENT_PREFIX = '//';
-
-export function streamWriteWithNewline(
-  stream: fs.WriteStream,
-  ...chunk: string[]
-) {
-  stream.write(chunk.join(NEWLINE) + NEWLINE);
-}
-
-export function commentLines(lines: string[]) {
-  return lines.map((x) => `${COMMENT_PREFIX} ${x}`);
-}
 
 export function readFileLineByLine(
   filePath: string,
-  onLine: (line: string, lineNumber: number) => void,
+  onLineFn: (line: string, lineNumber: number) => void,
   options?: {
     endDelimiter?: string;
     skipEmptyLines?: boolean;
@@ -43,7 +31,7 @@ export function readFileLineByLine(
         rl.close();
         rl.removeAllListeners();
       } else if (!skipEmptyLines || line.trim() !== '') {
-        onLine(line, lineNumber);
+        onLineFn(line.trimRight(), lineNumber);
       }
     });
 
@@ -51,4 +39,30 @@ export function readFileLineByLine(
       return resolve();
     });
   });
+}
+
+export function writeFileLineByLine(
+  filePath: string,
+): {
+  writeWithNewline: (...chunk: string[]) => void;
+  done: () => Promise<void>;
+} {
+  const stream = fs.createWriteStream(filePath, {
+    encoding: 'utf8',
+  });
+
+  function writeWithNewline(...chunk: string[]) {
+    stream.write(chunk.join(NEWLINE) + NEWLINE);
+  }
+
+  function done(): Promise<void> {
+    return new Promise((resolve) => {
+      stream.end(() => resolve());
+    });
+  }
+
+  return {
+    writeWithNewline,
+    done,
+  };
 }
