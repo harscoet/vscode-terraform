@@ -17,7 +17,6 @@ export namespace TerraformFile {
     export interface Module {
       kind: Block.Kind.Module;
       name: string;
-      otherVariableNames: Set<string>;
       attributes: {
         source: string;
         variables: Map<string, Module.Variable>;
@@ -41,7 +40,6 @@ export namespace TerraformFile {
 
       export interface Variable {
         isCommented: boolean;
-        isCustom: boolean;
         lines: string[];
       }
     }
@@ -56,6 +54,7 @@ export namespace TerraformFile {
 
   export interface Content {
     lines: Content.Line[];
+    variableNames: Set<string>;
     blocks: Content.Blocks;
   }
 

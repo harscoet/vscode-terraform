@@ -1,5 +1,9 @@
-import { readFileLineByLine, parseLineToFindAttribute } from './file-util';
-import { USER_COMMENT_PREFIX, GENERATED_DELIMITER_PREFIX } from './constants';
+import {
+  readFileLineByLine,
+  parseLineToFindAttribute,
+  isLastLineEmpty,
+} from './file-util';
+import { USER_COMMENT_PREFIX } from './constants';
 import { TerraformFile } from './types';
 
 const OVERRIDE_DECORATOR = `${USER_COMMENT_PREFIX} override`;
@@ -20,28 +24,68 @@ export async function parseTerraformFileContent(
     variables: new Map(),
   };
 
+  let variableNames: Set<string> = new Set();
   let currentBlock: TerraformFile.Block | null = null;
+  let currentModuleVariableName: string | null = null;
+  let currentModuleVariable: TerraformFile.Block.Module.Variable | null = null;
   let isOverride: boolean = false;
+
+  function appendCurrentModuleVariable() {
+    if (
+      currentBlock &&
+      currentModuleVariable &&
+      currentModuleVariableName &&
+      currentBlock.kind === TerraformFile.Block.Kind.Module
+    ) {
+      if (isLastLineEmpty(currentModuleVariable.lines)) {
+        currentModuleVariable.lines.pop();
+      }
+
+      currentBlock.attributes.variables.set(
+        currentModuleVariableName,
+        currentModuleVariable,
+      );
+
+      currentModuleVariableName = null;
+      currentModuleVariable = null;
+    }
+  }
 
   const lines = await readFileLineByLine(
     filePath,
     (rawLine: string, prevLine: TerraformFile.Content.Line | null) => {
+      const isEmptyLine = rawLine.trim() === '';
+
+      // Register variable names found in any line
+      for (const groups of rawLine.matchAll(
+        VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP,
+      )) {
+        const [variableName] = groups.slice(1);
+
+        if (variableName) {
+          variableNames.add(variableName);
+        }
+      }
+
       // Outside block body
       if (!currentBlock) {
         if (rawLine.startsWith(OVERRIDE_DECORATOR)) {
           isOverride = true;
-          return false;
-        }
+        } else {
+          const matchingBlock = initBlock(rawLine, isOverride);
 
-        const matchingBlock = initBlock(rawLine, isOverride);
+          if (matchingBlock) {
+            currentBlock = matchingBlock;
+          }
 
-        if (matchingBlock) {
-          currentBlock = matchingBlock;
+          // Keep first block line
+          return true;
         }
       }
       // Closing line in block
       else if (rawLine === CLOSING_CURLY_BRACE) {
         if (currentBlock.kind === TerraformFile.Block.Kind.Module) {
+          appendCurrentModuleVariable();
           blocks.modules.set(currentBlock.name, currentBlock);
 
           if (prevLine) {
@@ -52,19 +96,13 @@ export async function parseTerraformFileContent(
           }
 
           currentBlock = null;
+
+          // Keep closing curly brace line
+          return true;
         } else {
           blocks.variables.set(currentBlock.name, currentBlock);
           currentBlock = null;
-
-          return false;
         }
-      }
-      // Empty/Generated lines inside block bodies
-      else if (
-        rawLine.trim() === '' ||
-        rawLine.includes(GENERATED_DELIMITER_PREFIX)
-      ) {
-        return false;
       }
       // Inside body module block
       else if (currentBlock.kind === TerraformFile.Block.Kind.Module) {
@@ -72,67 +110,59 @@ export async function parseTerraformFileContent(
 
         // Is first level attribute?
         if (attribute && attribute.indent === 2) {
-          // Is reserved attribute name or variable?
+          // Is reserved attribute name?
           if (RESERVED_ATTRIBUTE_NAMES.includes(attribute.key)) {
+            appendCurrentModuleVariable();
+
             if (
               attribute.key ===
               TerraformFile.Block.Module.ReservedAttributeName.Source
             ) {
               currentBlock.attributes.source = attribute.value.slice(1, -1);
             }
+
+            // Keep all reserved attributes
+            return true;
           }
           // Attribute is variable
           else {
             const isCommented = attribute.key.includes(USER_COMMENT_PREFIX);
-
             const variableName = isCommented
               ? attribute.key.replace(USER_COMMENT_PREFIX_REGEXP, '')
               : attribute.key;
+            const isCustom = attribute.value !== `var.${variableName}`;
 
-            const isPassThroughVariable =
-              attribute.value === `var.${variableName}`;
+            appendCurrentModuleVariable();
 
-            // Ignore non commented pass-through variables
-            if (!isCommented && isPassThroughVariable) {
-              return false;
-            }
-
-            currentBlock.attributes.variables.set(variableName, {
-              isCustom: !isPassThroughVariable,
-              isCommented,
-              lines: [],
-            });
-
-            // Skip line
-            if (isCommented && isPassThroughVariable) {
-              return false;
+            // Keep only info about commented or custom variables
+            if (isCommented || isCustom) {
+              currentModuleVariableName = variableName;
+              currentModuleVariable = {
+                isCommented,
+                lines: [attribute.value],
+              };
             }
           }
-        }
-
-        // Register other variables found
-        for (const groups of rawLine.matchAll(
-          VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP,
-        )) {
-          const [variableName] = groups.slice(1);
-
-          if (variableName) {
-            currentBlock.otherVariableNames.add(variableName);
+        } else if (currentModuleVariable) {
+          if (!isEmptyLine || !isLastLineEmpty(currentModuleVariable.lines)) {
+            currentModuleVariable.lines.push(rawLine);
           }
         }
       }
       // Inside body variable block
       else if (currentBlock.kind === TerraformFile.Block.Kind.Variable) {
-        currentBlock.lines.push(rawLine);
-        return false;
+        if (!isEmptyLine) {
+          currentBlock.lines.push(rawLine);
+        }
       }
 
-      return true;
+      return false;
     },
   );
 
   return {
     lines,
+    variableNames,
     blocks,
   };
 }
@@ -149,7 +179,6 @@ function initBlock(
       return {
         kind: TerraformFile.Block.Kind.Module,
         name,
-        otherVariableNames: new Set(),
         attributes: {
           source: '',
           variables: new Map(),

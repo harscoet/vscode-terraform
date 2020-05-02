@@ -34,7 +34,7 @@ export function readFileLineByLine(
     });
 
     rl.on('close', () => {
-      return resolve();
+      return resolve(lines);
     });
   });
 }
@@ -79,4 +79,8 @@ export function parseLineToFindAttribute(
   }
 
   return null;
+}
+
+export function isLastLineEmpty(lines: string[]): boolean {
+  return lines.length > 0 && lines[lines.length - 1] === '';
 }

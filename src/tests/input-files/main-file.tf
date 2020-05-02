@@ -4,16 +4,17 @@ locals {
 }
 
 module "api" {
-  source = "./kubernetes-app"
+  source  = "./kubernetes-app"
+  version = "1.1.0"
 
-  image_name                            = "api"
-  command                               = ["node", "dist/api", "--config", local.config_mount_path]
-  lifecycle_pre_stop_exec_command       = var.graceful_shutdown ? ["sleep", "10"] : null
-  liveness_probe_enabled                = false
-  liveness_probe_period_seconds         = var.liveness_probe_period_seconds
-  readiness_probe_http_get_path         = "/"
-  readiness_probe_initial_delay_seconds = 1
-  probe_port_index                      = var.with_metrics_api ? 1 : 0
+  image_name                      = "api"
+  command                         = ["node", "dist/api", "--config", local.config_mount_path]
+  lifecycle_pre_stop_exec_command = var.graceful_shutdown ? ["sleep", "10"] : null
+  liveness_probe_enabled          = false
+  liveness_probe_period_seconds   = var.liveness_probe_period_seconds
+  readiness_probe_http_get_path   = "/"
+  # readiness_probe_initial_delay_seconds = 1
+  probe_port_index = var.with_metrics_api ? 1 : 0
 
   ports = concat(
     [{
@@ -27,6 +28,7 @@ module "api" {
       service_port   = null
     }]
   )
+
 
   config_map_files = {
     mount_path = local.config_mount_path
