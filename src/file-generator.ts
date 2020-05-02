@@ -1,24 +1,36 @@
 import * as path from 'path';
-import { MainFile, Module, Variables } from './types';
+import { TerraformFile } from './types';
 import { writeFileLineByLine } from './file-util';
 import { GENERATED_DELIMITER_PREFIX, USER_COMMENT_PREFIX } from './constants';
 
-export async function updateMainFile(mainFile: MainFile) {
-  const { filePath, lines, modules } = mainFile;
+export async function updateMainFile(
+  mainFile: TerraformFile,
+  variableFiles: TerraformFile[],
+) {
+  const {
+    filePath,
+    content: {
+      lines,
+      blocks: { modules },
+    },
+  } = mainFile;
   const { writeWithNewline, done } = writeFileLineByLine(filePath);
 
   for (let i = 0; i < lines.length; i++) {
-    const { value, contextModuleName, isModuleEndLine } = lines[i];
+    const { value, bodyBlockLastLineContext } = lines[i];
 
     writeWithNewline(value);
 
-    if (isModuleEndLine && contextModuleName) {
-      const module = modules.get(contextModuleName);
+    if (bodyBlockLastLineContext) {
+      const module = modules.get(bodyBlockLastLineContext.name);
 
       if (module) {
-        const { variableAttributes, variableFiles } = module;
-
-        for (const { fileName, variables } of variableFiles) {
+        for (const {
+          fileName,
+          content: {
+            blocks: { variables },
+          },
+        } of variableFiles) {
           let longuestVariableNameLength: number = 0;
 
           const displayVariables: Array<{
@@ -28,7 +40,7 @@ export async function updateMainFile(mainFile: MainFile) {
           }> = [];
 
           for (const variableName of variables.keys()) {
-            const { isCustom, isCommented } = variableAttributes.get(
+            const { isCustom, isCommented } = module.attributes.variables.get(
               variableName,
             ) ?? { isCustom: false, isCommented: false };
 
@@ -85,62 +97,62 @@ export async function updateMainFile(mainFile: MainFile) {
   return done();
 }
 
-export async function generateInheritedVariableFile(
-  filePath: string,
-  overrideVariables: Variables,
-  modules: Map<string, Module>,
-): Promise<void> {
-  const { writeWithNewline, done } = writeFileLineByLine(filePath);
-  let i = 0;
+// export async function generateInheritedVariableFile(
+//   filePath: string,
+//   overrideVariables: Variables,
+//   modules: Map<string, Module>,
+// ): Promise<void> {
+//   const { writeWithNewline, done } = writeFileLineByLine(filePath);
+//   let i = 0;
 
-  for (const [moduleName, module] of modules) {
-    i++;
-    const isLastModule = i === modules.size;
-    const {
-      variableFiles,
-      source,
-      variableAttributes,
-      variableNamesUsedInAttributeValues,
-    } = module;
+//   for (const [moduleName, module] of modules) {
+//     i++;
+//     const isLastModule = i === modules.size;
+//     const {
+//       variableFiles,
+//       source,
+//       variableAttributes,
+//       variableNamesUsedInAttributeValues,
+//     } = module;
 
-    for (let j = 0; j < variableFiles.length; j++) {
-      const { fileName, variables } = variableFiles[j];
-      const isLastFile = j === variableFiles.length - 1;
+//     for (let j = 0; j < variableFiles.length; j++) {
+//       const { fileName, variables } = variableFiles[j];
+//       const isLastFile = j === variableFiles.length - 1;
 
-      const filteredVariables = Array.from(variables).filter(
-        ([variableName]) => {
-          const { isCustom, isCommented } =
-            variableAttributes.get(variableName) ?? {};
+//       const filteredVariables = Array.from(variables).filter(
+//         ([variableName]) => {
+//           const { isCustom, isCommented } =
+//             variableAttributes.get(variableName) ?? {};
 
-          return (
-            variableNamesUsedInAttributeValues.has(variableName) ||
-            (!isCustom && !isCommented)
-          );
-        },
-      );
+//           return (
+//             variableNamesUsedInAttributeValues.has(variableName) ||
+//             (!isCustom && !isCommented)
+//           );
+//         },
+//       );
 
-      if (!filteredVariables.length) {
-        continue;
-      }
+//       if (!filteredVariables.length) {
+//         continue;
+//       }
 
-      writeWithNewline(
-        `${GENERATED_DELIMITER_PREFIX} MODULE ${moduleName} FILE ${path.join(
-          source,
-          fileName,
-        )}`,
-      );
+//       writeWithNewline(
+//         `${GENERATED_DELIMITER_PREFIX} MODULE ${moduleName} FILE ${path.join(
+//           source,
+//           fileName,
+//         )}`,
+//       );
 
-      for (const [variableName, variableLines] of filteredVariables) {
-        const overrideVariableLines = overrideVariables.get(variableName);
+//       for (const [variableName, variableLines] of filteredVariables) {
+//         const overrideVariableLines = overrideVariables.get(variableName);
 
-        writeWithNewline(...(overrideVariableLines ?? variableLines));
-      }
+//         writeWithNewline(...(overrideVariableLines ?? variableLines));
+//       }
 
-      if (!(isLastModule && isLastFile)) {
-        writeWithNewline();
-      }
-    }
-  }
+//       if (!(isLastModule && isLastFile)) {
+//         writeWithNewline();
+//       }
+//     }
+//   }
 
-  return done();
-}
+//   return done();
+// }

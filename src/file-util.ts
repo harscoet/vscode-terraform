@@ -1,37 +1,35 @@
 import * as fs from 'fs';
 import { createInterface } from 'readline';
+import { TerraformFile } from './types';
 
 const NEWLINE = '\n';
 
 export function readFileLineByLine(
   filePath: string,
-  onLineFn: (line: string, lineNumber: number) => void,
-  options?: {
-    endDelimiter?: string;
-    skipEmptyLines?: boolean;
-  },
-): Promise<void> {
-  return new Promise((resolve) => {
-    const { endDelimiter, skipEmptyLines } = options || {};
+  onLineFn: (
+    line: string,
+    prevLine: TerraformFile.Content.Line | null,
+  ) => boolean,
+): Promise<TerraformFile.Content.Line[]> {
+  return new Promise((resolve, reject) => {
     const input = fs.createReadStream(filePath);
-    let lineNumber = 0;
+    const lines: TerraformFile.Content.Line[] = [];
 
-    input.on('error', () => {
-      return resolve();
+    input.on('error', (err) => {
+      return reject(err);
     });
 
     const rl = createInterface({
       input,
     });
 
-    rl.on('line', (line) => {
-      lineNumber++;
+    rl.on('line', (rawLine: string) => {
+      const prevLine = lines.length ? lines[lines.length - 1] : null;
 
-      if (endDelimiter && line.startsWith(endDelimiter)) {
-        rl.close();
-        rl.removeAllListeners();
-      } else if (!skipEmptyLines || line.trim() !== '') {
-        onLineFn(line.trimRight(), lineNumber);
+      if (onLineFn(rawLine.trimRight(), prevLine)) {
+        lines.push({
+          value: rawLine,
+        });
       }
     });
 
@@ -65,4 +63,20 @@ export function writeFileLineByLine(
     writeWithNewline,
     done,
   };
+}
+
+export function parseLineToFindAttribute(
+  line: string,
+): { key: string; value: string; indent: number } | null {
+  const parts = line.split('=');
+
+  if (parts.length > 1) {
+    return {
+      key: parts[0].trim(),
+      value: parts[1].trim(),
+      indent: parts[0].search(/\S/),
+    };
+  }
+
+  return null;
 }

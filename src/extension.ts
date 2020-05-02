@@ -37,7 +37,7 @@ export function activate(context: vscode.ExtensionContext) {
           mainFile.modules,
         );
 
-        await updateMainFile(mainFile);
+        // await updateMainFile(mainFile);
 
         vscode.window.showInformationMessage(
           `File ${inheritedVariableFilePath} generated`,
