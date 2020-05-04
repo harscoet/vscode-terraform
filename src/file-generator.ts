@@ -1,18 +1,21 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import { TerraformFile } from './types';
-import { writeFileLineByLine } from './file-util';
-import { GENERATED_DELIMITER_PREFIX, USER_COMMENT_PREFIX } from './constants';
+import {
+  GENERATED_DELIMITER_PREFIX,
+  USER_COMMENT_PREFIX,
+  OVERRIDE_DECORATOR,
+  TERRAFORM_FILE_EXTENSION,
+  NEWLINE,
+} from './constants';
 
-export async function updateMainFile(
+export async function generateMainFile(
   mainFile: TerraformFile,
-  variableFiles: TerraformFile[],
+  moduleVariableFiles: Map<string, TerraformFile[]>,
 ) {
   const {
     filePath,
-    content: {
-      lines,
-      blocks: { modules },
-    },
+    content: { lines, blocks },
   } = mainFile;
   const { writeWithNewline, done } = writeFileLineByLine(filePath);
 
@@ -21,12 +24,18 @@ export async function updateMainFile(
 
     writeWithNewline(value);
 
-    if (bodyBlockLastLineContext) {
-      const module = modules.get(bodyBlockLastLineContext.name);
+    if (
+      bodyBlockLastLineContext &&
+      bodyBlockLastLineContext.kind === TerraformFile.Block.Kind.Module
+    ) {
+      const module = blocks.modules.get(bodyBlockLastLineContext.name);
+      const variableFiles = moduleVariableFiles.get(
+        bodyBlockLastLineContext.name,
+      );
 
-      if (module) {
+      if (module && variableFiles) {
         for (const {
-          fileName,
+          filePath,
           content: {
             blocks: { variables },
           },
@@ -40,13 +49,9 @@ export async function updateMainFile(
           }> = [];
 
           for (const variableName of variables.keys()) {
-            const { isCustom, isCommented } = module.attributes.variables.get(
+            const { isCommented } = module.attributes.variables.get(
               variableName,
             ) ?? { isCustom: false, isCommented: false };
-
-            if (isCustom) {
-              continue;
-            }
 
             const variableNameDisplayLength = isCommented
               ? variableName.length + 2
@@ -65,7 +70,10 @@ export async function updateMainFile(
 
           writeWithNewline();
 
-          const fileNameParts = fileName.replace('.tf', '').split('-');
+          const fileNameParts = path
+            .basename(filePath)
+            .replace('.tf', '')
+            .split('-');
 
           if (fileNameParts.length > 1) {
             writeWithNewline(
@@ -97,62 +105,96 @@ export async function updateMainFile(
   return done();
 }
 
-// export async function generateInheritedVariableFile(
-//   filePath: string,
-//   overrideVariables: Variables,
-//   modules: Map<string, Module>,
-// ): Promise<void> {
-//   const { writeWithNewline, done } = writeFileLineByLine(filePath);
-//   let i = 0;
+export async function generateInheritedVariableFile(
+  filePath: string,
+  mainFileContent: TerraformFile.Content,
+  inheritedVariableFileContent: TerraformFile.Content,
+  moduleVariableFiles: Map<string, TerraformFile[]>,
+): Promise<void> {
+  const { writeWithNewline, done } = writeFileLineByLine(filePath);
+  let i = 0;
 
-//   for (const [moduleName, module] of modules) {
-//     i++;
-//     const isLastModule = i === modules.size;
-//     const {
-//       variableFiles,
-//       source,
-//       variableAttributes,
-//       variableNamesUsedInAttributeValues,
-//     } = module;
+  for (const [moduleName, module] of mainFileContent.blocks.modules) {
+    i++;
+    const isLastModule = i === mainFileContent.blocks.modules.size;
+    const variableFiles = moduleVariableFiles.get(moduleName) ?? [];
 
-//     for (let j = 0; j < variableFiles.length; j++) {
-//       const { fileName, variables } = variableFiles[j];
-//       const isLastFile = j === variableFiles.length - 1;
+    for (let j = 0; j < variableFiles.length; j++) {
+      const {
+        filePath,
+        content: { blocks },
+      } = variableFiles[j];
 
-//       const filteredVariables = Array.from(variables).filter(
-//         ([variableName]) => {
-//           const { isCustom, isCommented } =
-//             variableAttributes.get(variableName) ?? {};
+      const isLastFile = j === variableFiles.length - 1;
 
-//           return (
-//             variableNamesUsedInAttributeValues.has(variableName) ||
-//             (!isCustom && !isCommented)
-//           );
-//         },
-//       );
+      const filteredVariables = Array.from(blocks.variables).filter(
+        ([variableName]) => {
+          const { isCommented } =
+            module.attributes.variables.get(variableName) ?? {};
 
-//       if (!filteredVariables.length) {
-//         continue;
-//       }
+          return (
+            isCommented === undefined ||
+            mainFileContent.variableNames.has(variableName)
+          );
+        },
+      );
 
-//       writeWithNewline(
-//         `${GENERATED_DELIMITER_PREFIX} MODULE ${moduleName} FILE ${path.join(
-//           source,
-//           fileName,
-//         )}`,
-//       );
+      if (!filteredVariables.length) {
+        continue;
+      }
 
-//       for (const [variableName, variableLines] of filteredVariables) {
-//         const overrideVariableLines = overrideVariables.get(variableName);
+      writeWithNewline(
+        `${GENERATED_DELIMITER_PREFIX} MODULE ${moduleName} FILE ${path.join(
+          module.attributes.source,
+          path.basename(filePath, TERRAFORM_FILE_EXTENSION),
+        )}`,
+      );
 
-//         writeWithNewline(...(overrideVariableLines ?? variableLines));
-//       }
+      for (const [variableName, variable] of filteredVariables) {
+        const overrideVariable = inheritedVariableFileContent.blocks.variables.get(
+          variableName,
+        );
 
-//       if (!(isLastModule && isLastFile)) {
-//         writeWithNewline();
-//       }
-//     }
-//   }
+        if (overrideVariable) {
+          writeWithNewline(OVERRIDE_DECORATOR);
+        }
 
-//   return done();
-// }
+        writeWithNewline(`variable "${variableName}" {`);
+        writeWithNewline(...(overrideVariable?.lines ?? variable.lines));
+        writeWithNewline('}');
+      }
+
+      if (!(isLastModule && isLastFile)) {
+        writeWithNewline();
+      }
+    }
+  }
+
+  return done();
+}
+
+function writeFileLineByLine(
+  filePath: string,
+): {
+  writeWithNewline: (...chunk: string[]) => void;
+  done: () => Promise<void>;
+} {
+  const stream = fs.createWriteStream(filePath, {
+    encoding: 'utf8',
+  });
+
+  function writeWithNewline(...chunk: string[]) {
+    stream.write(chunk.join(NEWLINE) + NEWLINE);
+  }
+
+  function done(): Promise<void> {
+    return new Promise((resolve) => {
+      stream.end(() => resolve());
+    });
+  }
+
+  return {
+    writeWithNewline,
+    done,
+  };
+}

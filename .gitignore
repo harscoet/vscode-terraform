@@ -10,3 +10,4 @@ npm-debug.log
 *.tfplan.json
 lspbin
 tf-tsp.log
+src/tests/output/file-generator/.*

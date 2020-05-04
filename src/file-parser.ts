@@ -1,13 +1,12 @@
+import * as fs from 'fs';
+import { createInterface } from 'readline';
 import {
-  readFileLineByLine,
-  parseLineToFindAttribute,
-  isLastLineEmpty,
-} from './file-util';
-import { USER_COMMENT_PREFIX } from './constants';
+  USER_COMMENT_PREFIX,
+  OVERRIDE_DECORATOR,
+  CLOSING_CURLY_BRACE,
+} from './constants';
 import { TerraformFile } from './types';
 
-const OVERRIDE_DECORATOR = `${USER_COMMENT_PREFIX} override`;
-const CLOSING_CURLY_BRACE = '}';
 const RESERVED_ATTRIBUTE_NAMES: string[] = Object.values(
   TerraformFile.Block.Module.ReservedAttributeName,
 );
@@ -53,17 +52,21 @@ export async function parseTerraformFileContent(
 
   const lines = await readFileLineByLine(
     filePath,
-    (rawLine: string, prevLine: TerraformFile.Content.Line | null) => {
-      const isEmptyLine = rawLine.trim() === '';
-
+    (
+      rawLine: string,
+      prevLine: TerraformFile.Content.Line | null,
+      isEmptyLine: boolean,
+    ) => {
       // Register variable names found in any line
-      for (const groups of rawLine.matchAll(
-        VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP,
-      )) {
-        const [variableName] = groups.slice(1);
+      if (!rawLine.includes(USER_COMMENT_PREFIX)) {
+        for (const groups of rawLine.matchAll(
+          VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP,
+        )) {
+          const [variableName] = groups.slice(1);
 
-        if (variableName) {
-          variableNames.add(variableName);
+          if (variableName) {
+            variableNames.add(variableName);
+          }
         }
       }
 
@@ -77,32 +80,29 @@ export async function parseTerraformFileContent(
           if (matchingBlock) {
             currentBlock = matchingBlock;
           }
-
-          // Keep first block line
-          return true;
         }
+
+        return true;
       }
       // Closing line in block
       else if (rawLine === CLOSING_CURLY_BRACE) {
         if (currentBlock.kind === TerraformFile.Block.Kind.Module) {
           appendCurrentModuleVariable();
           blocks.modules.set(currentBlock.name, currentBlock);
-
-          if (prevLine) {
-            prevLine.bodyBlockLastLineContext = {
-              kind: currentBlock.kind,
-              name: currentBlock.name,
-            };
-          }
-
-          currentBlock = null;
-
-          // Keep closing curly brace line
-          return true;
         } else {
           blocks.variables.set(currentBlock.name, currentBlock);
-          currentBlock = null;
         }
+
+        if (prevLine) {
+          prevLine.bodyBlockLastLineContext = {
+            kind: currentBlock.kind,
+            name: currentBlock.name,
+          };
+        }
+
+        currentBlock = null;
+
+        return true;
       }
       // Inside body module block
       else if (currentBlock.kind === TerraformFile.Block.Kind.Module) {
@@ -154,6 +154,8 @@ export async function parseTerraformFileContent(
         if (!isEmptyLine) {
           currentBlock.lines.push(rawLine);
         }
+
+        return true;
       }
 
       return false;
@@ -194,4 +196,60 @@ function initBlock(
     default:
       return null;
   }
+}
+
+function parseLineToFindAttribute(
+  line: string,
+): { key: string; value: string; indent: number } | null {
+  const parts = line.split('=');
+
+  if (parts.length > 1) {
+    return {
+      key: parts[0].trim(),
+      value: parts[1].trim(),
+      indent: parts[0].search(/\S/),
+    };
+  }
+
+  return null;
+}
+
+function readFileLineByLine(
+  filePath: string,
+  onLineFn: (
+    line: string,
+    prevLine: TerraformFile.Content.Line | null,
+    isEmptyLine: boolean,
+  ) => boolean,
+): Promise<TerraformFile.Content.Line[]> {
+  return new Promise((resolve, reject) => {
+    const input = fs.createReadStream(filePath);
+    const lines: TerraformFile.Content.Line[] = [];
+
+    input.on('error', (err) => {
+      return reject(err);
+    });
+
+    const rl = createInterface({
+      input,
+    });
+
+    rl.on('line', (rawLine: string) => {
+      const prevLine = lines.length ? lines[lines.length - 1] : null;
+
+      if (onLineFn(rawLine.trimRight(), prevLine, rawLine.trim() === '')) {
+        lines.push({
+          value: rawLine,
+        });
+      }
+    });
+
+    rl.on('close', () => {
+      return resolve(lines);
+    });
+  });
+}
+
+function isLastLineEmpty(lines: string[]): boolean {
+  return lines.length > 0 && lines[lines.length - 1] === '';
 }

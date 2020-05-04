@@ -1,7 +1,5 @@
 export interface TerraformFile {
-  fileName: string;
   filePath: string;
-  folderPath: string;
   content: TerraformFile.Content;
 }
 

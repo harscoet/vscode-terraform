@@ -3,11 +3,21 @@ locals {
   computed_from_unused_var = var.deployment_enabled ? 1 : 0
 }
 
+variable "graceful_shutdown" {
+  type    = bool
+  default = true
+}
+# override
+variable "hpa_min_replicas" {
+  type    = number
+  default = 5
+}
+
 module "api" {
   source  = "./kubernetes-app"
   version = "1.1.0"
 
-  image_name                      = "api"
+  image_name                      = "${var.image_name}_api"
   command                         = ["node", "dist/api", "--config", local.config_mount_path]
   lifecycle_pre_stop_exec_command = var.graceful_shutdown ? ["sleep", "10"] : null
   liveness_probe_enabled          = false

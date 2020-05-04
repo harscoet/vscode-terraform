@@ -1,9 +1,9 @@
-variable deployment_enabled {
+variable "deployment_enabled" {
   type    = bool
   default = true
 }
 
-variable probe_port_index {
+variable "probe_port_index" {
   type    = number
   default = 0
 }
@@ -41,9 +41,8 @@ variable "lifecycle_pre_stop_exec_command" {
 }
 
 variable "dns_policy" {
-  type        = string
-  description = "(Optional) Set DNS policy for containers within the pod. Valid values are 'ClusterFirstWithHostNet', 'ClusterFirst', 'Default' or 'None'. DNS parameters given in DNSConfig will be merged with the policy selected with DNSPolicy. To have DNS options set along with hostNetwork, you have to specify DNS policy explicitly to 'ClusterFirstWithHostNet'. Optional: Defaults to 'ClusterFirst'"
-  default     = "ClusterFirst"
+  type    = string
+  default = "ClusterFirst"
 }
 
 variable "tolerations" {
