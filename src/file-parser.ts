@@ -4,6 +4,7 @@ import {
   USER_COMMENT_PREFIX,
   OVERRIDE_DECORATOR,
   CLOSING_CURLY_BRACE,
+  GENERATED_DELIMITER_PREFIX,
 } from './constants';
 import { TerraformFile } from './types';
 
@@ -50,6 +51,21 @@ export async function parseTerraformFileContent(
     }
   }
 
+  function findAndAppendVariableNames(rawLine: string) {
+    // Register variable names found in any line
+    if (!rawLine.includes(USER_COMMENT_PREFIX)) {
+      for (const groups of rawLine.matchAll(
+        VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP,
+      )) {
+        const [variableName] = groups.slice(1);
+
+        if (variableName) {
+          variableNames.add(variableName);
+        }
+      }
+    }
+  }
+
   const lines = await readFileLineByLine(
     filePath,
     (
@@ -57,19 +73,6 @@ export async function parseTerraformFileContent(
       prevLine: TerraformFile.Content.Line | null,
       isEmptyLine: boolean,
     ) => {
-      // Register variable names found in any line
-      if (!rawLine.includes(USER_COMMENT_PREFIX)) {
-        for (const groups of rawLine.matchAll(
-          VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP,
-        )) {
-          const [variableName] = groups.slice(1);
-
-          if (variableName) {
-            variableNames.add(variableName);
-          }
-        }
-      }
-
       // Outside block body
       if (!currentBlock) {
         if (rawLine.startsWith(OVERRIDE_DECORATOR)) {
@@ -79,6 +82,8 @@ export async function parseTerraformFileContent(
 
           if (matchingBlock) {
             currentBlock = matchingBlock;
+          } else {
+            findAndAppendVariableNames(rawLine);
           }
         }
 
@@ -106,6 +111,10 @@ export async function parseTerraformFileContent(
       }
       // Inside body module block
       else if (currentBlock.kind === TerraformFile.Block.Kind.Module) {
+        if (rawLine.includes(GENERATED_DELIMITER_PREFIX)) {
+          return false;
+        }
+
         const attribute = parseLineToFindAttribute(rawLine);
 
         // Is first level attribute?
@@ -113,6 +122,7 @@ export async function parseTerraformFileContent(
           // Is reserved attribute name?
           if (RESERVED_ATTRIBUTE_NAMES.includes(attribute.key)) {
             appendCurrentModuleVariable();
+            findAndAppendVariableNames(rawLine);
 
             if (
               attribute.key ===
@@ -132,6 +142,10 @@ export async function parseTerraformFileContent(
               : attribute.key;
             const isCustom = attribute.value !== `var.${variableName}`;
 
+            if (isCustom) {
+              findAndAppendVariableNames(rawLine);
+            }
+
             appendCurrentModuleVariable();
 
             // Keep only info about commented or custom variables
@@ -145,6 +159,7 @@ export async function parseTerraformFileContent(
           }
         } else if (currentModuleVariable) {
           if (!isEmptyLine || !isLastLineEmpty(currentModuleVariable.lines)) {
+            findAndAppendVariableNames(rawLine);
             currentModuleVariable.lines.push(rawLine);
           }
         }

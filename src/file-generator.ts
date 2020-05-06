@@ -9,6 +9,9 @@ import {
   NEWLINE,
 } from './constants';
 
+const A_AFTER_B = 1;
+const A_BEFORE_B = -1;
+
 export async function generateMainFile(
   mainFile: TerraformFile,
   moduleVariableFiles: Map<string, TerraformFile[]>,
@@ -28,45 +31,72 @@ export async function generateMainFile(
       bodyBlockLastLineContext &&
       bodyBlockLastLineContext.kind === TerraformFile.Block.Kind.Module
     ) {
-      const module = blocks.modules.get(bodyBlockLastLineContext.name);
+      const moduleBlock = blocks.modules.get(bodyBlockLastLineContext.name);
       const variableFiles = moduleVariableFiles.get(
         bodyBlockLastLineContext.name,
       );
 
-      if (module && variableFiles) {
-        for (const {
-          filePath,
-          content: {
-            blocks: { variables },
-          },
-        } of variableFiles) {
+      if (moduleBlock && variableFiles) {
+        for (const variableFile of variableFiles) {
           let longuestVariableNameLength: number = 0;
+          let longuestCommentedVariableNameLength: number = 0;
+
+          const {
+            filePath,
+            content: {
+              blocks: { variables },
+            },
+          } = variableFile;
 
           const displayVariables: Array<{
             variableName: string;
             isCommented: boolean;
             variableNameDisplayLength: number;
+            lines: string[];
           }> = [];
 
           for (const variableName of variables.keys()) {
-            const { isCommented } = module.attributes.variables.get(
+            const { isCommented, lines } = moduleBlock.attributes.variables.get(
               variableName,
-            ) ?? { isCustom: false, isCommented: false };
+            ) ?? { isCommented: false, lines: [] };
 
             const variableNameDisplayLength = isCommented
               ? variableName.length + 2
               : variableName.length;
 
-            if (variableNameDisplayLength > longuestVariableNameLength) {
+            if (
+              !isCommented &&
+              variableNameDisplayLength > longuestVariableNameLength
+            ) {
               longuestVariableNameLength = variableNameDisplayLength;
+            } else if (
+              isCommented &&
+              variableNameDisplayLength > longuestCommentedVariableNameLength
+            ) {
+              longuestCommentedVariableNameLength = variableNameDisplayLength;
             }
 
             displayVariables.push({
               variableName,
               isCommented,
               variableNameDisplayLength,
+              lines,
             });
           }
+
+          const sortedDisplayVariables = displayVariables.sort((a, b) => {
+            if (a.isCommented && !b.isCommented) {
+              return A_AFTER_B;
+            } else if (!a.isCommented && b.isCommented) {
+              return A_BEFORE_B;
+            } else if (a.lines.length && !b.lines.length) {
+              return A_BEFORE_B;
+            } else if (!a.lines.length && b.lines.length) {
+              return A_AFTER_B;
+            }
+
+            return 0;
+          });
 
           writeWithNewline();
 
@@ -81,21 +111,42 @@ export async function generateMainFile(
             );
           }
 
-          for (const {
-            variableName,
-            isCommented,
-            variableNameDisplayLength,
-          } of displayVariables.sort(
-            (a, b) => Number(a.isCommented) - Number(b.isCommented),
-          )) {
-            const prefix = isCommented ? `  ${USER_COMMENT_PREFIX} ` : '  ';
-            const spaces = ' '.repeat(
-              longuestVariableNameLength - variableNameDisplayLength,
-            );
+          for (const sortedDisplayVariable of sortedDisplayVariables) {
+            const {
+              variableName,
+              isCommented,
+              variableNameDisplayLength,
+              lines,
+            } = sortedDisplayVariable;
 
-            writeWithNewline(
-              `${prefix}${variableName}${spaces} = var.${variableName}`,
-            );
+            const indentPrefix = isCommented
+              ? `  ${USER_COMMENT_PREFIX} `
+              : '  ';
+
+            const spaces =
+              lines.length > 1
+                ? ''
+                : ' '.repeat(
+                    (isCommented &&
+                    longuestCommentedVariableNameLength >
+                      longuestVariableNameLength
+                      ? longuestCommentedVariableNameLength
+                      : longuestVariableNameLength) - variableNameDisplayLength,
+                  );
+
+            const prefix = `${indentPrefix}${variableName}${spaces} = `;
+
+            if (lines.length) {
+              writeWithNewline(
+                ...lines.map((x, i) => (i === 0 ? `${prefix}${x}` : x)),
+              );
+
+              if (lines.length > 1) {
+                writeWithNewline();
+              }
+            } else {
+              writeWithNewline(`${prefix}var.${variableName}`);
+            }
           }
         }
       }
@@ -108,7 +159,7 @@ export async function generateMainFile(
 export async function generateInheritedVariableFile(
   filePath: string,
   mainFileContent: TerraformFile.Content,
-  inheritedVariableFileContent: TerraformFile.Content,
+  inheritedVariableFileContent: TerraformFile.Content | null,
   moduleVariableFiles: Map<string, TerraformFile[]>,
 ): Promise<void> {
   const { writeWithNewline, done } = writeFileLineByLine(filePath);
@@ -151,11 +202,11 @@ export async function generateInheritedVariableFile(
       );
 
       for (const [variableName, variable] of filteredVariables) {
-        const overrideVariable = inheritedVariableFileContent.blocks.variables.get(
+        const overrideVariable = inheritedVariableFileContent?.blocks.variables.get(
           variableName,
         );
 
-        if (overrideVariable) {
+        if (overrideVariable && overrideVariable.isOverride) {
           writeWithNewline(OVERRIDE_DECORATOR);
         }
 

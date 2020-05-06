@@ -108,7 +108,6 @@ export const variableNames = new Set([
   'graceful_shutdown',
   'image_name',
   'instance_name',
-  'liveness_probe_period_seconds',
   'node_env',
   'pg_enabled',
   'with_metrics_api',

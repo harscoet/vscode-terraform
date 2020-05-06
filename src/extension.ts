@@ -1,13 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import {
-  parseMainFile,
-  parseOverrideVariablesFromGeneratedFile,
-} from './file-parser';
-import {
-  generateInheritedVariableFile,
-  updateMainFile,
-} from './file-generator';
+import { run } from './main';
 
 const INHERITED_VARIABLE_FILE_NAME = 'variables-inherited.tf';
 const MAIN_FILE_NAME = 'main.tf';
@@ -19,28 +12,14 @@ export function activate(context: vscode.ExtensionContext) {
       const activeFolderPath = path.dirname(textEditor.document.fileName);
 
       try {
-        const inheritedVariableFilePath = path.resolve(
+        await run(
           activeFolderPath,
+          MAIN_FILE_NAME,
           INHERITED_VARIABLE_FILE_NAME,
         );
 
-        const mainFilePath = path.resolve(activeFolderPath, MAIN_FILE_NAME);
-
-        const [mainFile, overrideVariables] = await Promise.all([
-          parseMainFile(activeFolderPath, mainFilePath),
-          parseOverrideVariablesFromGeneratedFile(inheritedVariableFilePath),
-        ]);
-
-        await generateInheritedVariableFile(
-          inheritedVariableFilePath,
-          overrideVariables,
-          mainFile.modules,
-        );
-
-        // await updateMainFile(mainFile);
-
         vscode.window.showInformationMessage(
-          `File ${inheritedVariableFilePath} generated`,
+          `File ${INHERITED_VARIABLE_FILE_NAME} generated`,
         );
       } catch (err) {
         vscode.window.showErrorMessage(err.message);

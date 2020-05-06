@@ -4,9 +4,9 @@ import {
   generateInheritedVariableFile,
   generateMainFile,
 } from '../file-generator';
-import { parseTerraformFileContent } from '../file-parser';
 import { mainFileOutput, kubernetesAppOutputs } from './output/file-parser';
 import { newMapVariableBlocks, newMap } from './test-util';
+import { parseTerraformFileContent } from '../file-parser';
 import { TerraformFile } from '../types';
 
 const moduleVariableFiles = newMap<TerraformFile[]>({
@@ -37,6 +37,10 @@ test('generateInheritedVariableFile', async () => {
             isOverride: true,
             lines: ['  type    = number', '  default = 66'],
           },
+          image_pull_policy: {
+            isOverride: false,
+            lines: ['  type    = string', '  default = null'],
+          },
         }),
       },
       lines: [],
@@ -58,26 +62,62 @@ test('generateInheritedVariableFile', async () => {
 test('generateMainFile', async () => {
   const generatedFilePath = getFilePath('.main');
 
+  const [expectedFileContent] = await Promise.all([
+    fs.promises.readFile(getFilePath('main'), {
+      encoding: 'utf8',
+    }),
+    generateMainFile(
+      {
+        filePath: generatedFilePath,
+        content: mainFileOutput,
+      },
+      moduleVariableFiles,
+    ),
+  ]);
+
+  const [generatedFileContent, mainFileOutputBis] = await Promise.all([
+    fs.promises.readFile(generatedFilePath, {
+      encoding: 'utf8',
+    }),
+    parseTerraformFileContent(generatedFilePath),
+  ]);
+
+  // Regenerate same file
   await generateMainFile(
     {
       filePath: generatedFilePath,
-      content: mainFileOutput,
+      content: mainFileOutputBis,
     },
     moduleVariableFiles,
   );
 
-  const mainFileOutputBis = await parseTerraformFileContent(generatedFilePath);
-  expect(mainFileOutputBis.blocks).toStrictEqual(mainFileOutput.blocks);
+  const generatedFileContentBis = await fs.promises.readFile(
+    generatedFilePath,
+    {
+      encoding: 'utf8',
+    },
+  );
+
+  expect(mainFileOutputBis.variableNames).toStrictEqual(
+    mainFileOutput.variableNames,
+  );
+
+  for (const [moduleName, module] of mainFileOutputBis.blocks.modules) {
+    expect(module.attributes.variables).toEqual(
+      mainFileOutput.blocks.modules.get(moduleName)?.attributes.variables,
+    );
+  }
+
+  expect(generatedFileContent).toEqual(expectedFileContent);
+  expect(generatedFileContentBis).toEqual(expectedFileContent);
 });
 
 function newVariableFile(
   fileNameSuffix: string,
   content: TerraformFile.Content,
-) {
+): TerraformFile {
   return {
-    fileName: `variables-${fileNameSuffix}`,
     filePath: `./kubernetes-app/variables-${fileNameSuffix}.tf`,
-    folderPath: './kubernetes-app',
     content,
   };
 }
