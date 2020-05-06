@@ -1,207 +1,216 @@
 import * as fs from 'fs';
-import * as path from 'path';
-import { readFileLineByLine } from './file-util';
-import { USER_COMMENT_PREFIX, GENERATED_DELIMITER_PREFIX } from './constants';
-import { MainFile, Module, Variables, VariableFile } from './types';
+import { createInterface } from 'readline';
+import {
+  USER_COMMENT_PREFIX,
+  OVERRIDE_DECORATOR,
+  CLOSING_CURLY_BRACE,
+  GENERATED_DELIMITER_PREFIX,
+} from './constants';
+import { TerraformFile } from './types';
 
-const OVERRIDE_PATTERN = `${USER_COMMENT_PREFIX} override`;
-const CLOSING_CURLY_BRACE = '}';
-const SOURCE_ATTRIBUTE = 'source';
+const RESERVED_ATTRIBUTE_NAMES: string[] = Object.values(
+  TerraformFile.Block.Module.ReservedAttributeName,
+);
 
-const RESERVED_ATTRIBUTES = [
-  SOURCE_ATTRIBUTE,
-  'version',
-  'count',
-  'for_each',
-  'lifecycle',
-];
-
-const MODULE_NAME_REGEXP = /module\s*"(.+)"/;
-const VARIABLE_NAME_REGEXP = /variable\s*"(.+)"/;
+const BLOCK_DECLARATION_REGEXP = /(module|variable)\s*"(.+)"/;
 const VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP = /var\.(\w+)/g;
 const USER_COMMENT_PREFIX_REGEXP = new RegExp(`${USER_COMMENT_PREFIX}+\\s*`);
 
-export async function parseMainFile(
-  folderPath: string,
+export async function parseTerraformFileContent(
   filePath: string,
-): Promise<MainFile> {
-  const modules: Module[] = [];
-  const lines: MainFile.Line[] = [];
-  let currentModule: Module | null = null;
+): Promise<TerraformFile.Content> {
+  const blocks: TerraformFile.Content.Blocks = {
+    modules: new Map(),
+    variables: new Map(),
+  };
 
-  await readFileLineByLine(filePath, (lineValue: string) => {
-    const isEmptyLine = lineValue.trim() === '';
-    const prevLine = lines.length > 0 ? lines[lines.length - 1] : null;
-    const prevLineIsEmpty = prevLine?.value.trim() === '';
+  let variableNames: Set<string> = new Set();
+  let currentBlock: TerraformFile.Block | null = null;
+  let currentModuleVariableName: string | null = null;
+  let currentModuleVariable: TerraformFile.Block.Module.Variable | null = null;
+  let isOverride: boolean = false;
 
-    if (isEmptyLine && prevLine && prevLineIsEmpty) {
-      return;
+  function appendCurrentModuleVariable() {
+    if (
+      currentBlock &&
+      currentModuleVariable &&
+      currentModuleVariableName &&
+      currentBlock.kind === TerraformFile.Block.Kind.Module
+    ) {
+      if (isLastLineEmpty(currentModuleVariable.lines)) {
+        currentModuleVariable.lines.pop();
+      }
+
+      currentBlock.attributes.variables.set(
+        currentModuleVariableName,
+        currentModuleVariable,
+      );
+
+      currentModuleVariableName = null;
+      currentModuleVariable = null;
     }
+  }
 
-    if (!currentModule) {
-      const moduleName = matchRegexp(lineValue, MODULE_NAME_REGEXP);
+  function findAndAppendVariableNames(rawLine: string) {
+    // Register variable names found in any line
+    if (!rawLine.includes(USER_COMMENT_PREFIX)) {
+      for (const groups of rawLine.matchAll(
+        VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP,
+      )) {
+        const [variableName] = groups.slice(1);
 
-      if (moduleName) {
-        currentModule = {
-          name: moduleName,
-          source: '',
-          variableAttributes: new Map(),
-          variableNamesUsedInAttributeValues: new Set(),
-          variableFiles: [],
-        };
+        if (variableName) {
+          variableNames.add(variableName);
+        }
       }
-    } else {
-      // End module
-      if (lineValue === CLOSING_CURLY_BRACE) {
-        modules.push(currentModule);
-        currentModule = null;
-        lines[lines.length - 1].isModuleEndLine = true;
-      }
-      // Generated delimiters
-      else if (lineValue.includes(GENERATED_DELIMITER_PREFIX)) {
-        lines.pop();
-        return;
-      }
-      // Module body attributes
-      else {
-        const attribute = parseLineToFindAttribute(lineValue);
+    }
+  }
 
-        if (attribute) {
-          if (attribute.key === SOURCE_ATTRIBUTE) {
-            currentModule.source = attribute.value.slice(1, -1);
-          } else if (
-            !RESERVED_ATTRIBUTES.includes(attribute.key) &&
-            attribute.indent === 2
-          ) {
+  const lines = await readFileLineByLine(
+    filePath,
+    (
+      rawLine: string,
+      prevLine: TerraformFile.Content.Line | null,
+      isEmptyLine: boolean,
+    ) => {
+      // Outside block body
+      if (!currentBlock) {
+        if (rawLine.startsWith(OVERRIDE_DECORATOR)) {
+          isOverride = true;
+        } else {
+          const matchingBlock = initBlock(rawLine, isOverride);
+
+          if (matchingBlock) {
+            currentBlock = matchingBlock;
+          } else {
+            findAndAppendVariableNames(rawLine);
+          }
+        }
+
+        return true;
+      }
+      // Closing line in block
+      else if (rawLine === CLOSING_CURLY_BRACE) {
+        if (currentBlock.kind === TerraformFile.Block.Kind.Module) {
+          appendCurrentModuleVariable();
+          blocks.modules.set(currentBlock.name, currentBlock);
+        } else {
+          blocks.variables.set(currentBlock.name, currentBlock);
+        }
+
+        if (prevLine) {
+          prevLine.bodyBlockLastLineContext = {
+            kind: currentBlock.kind,
+            name: currentBlock.name,
+          };
+        }
+
+        currentBlock = null;
+
+        return true;
+      }
+      // Inside body module block
+      else if (currentBlock.kind === TerraformFile.Block.Kind.Module) {
+        if (rawLine.includes(GENERATED_DELIMITER_PREFIX)) {
+          return false;
+        }
+
+        const attribute = parseLineToFindAttribute(rawLine);
+
+        // Is first level attribute?
+        if (attribute && attribute.indent === 2) {
+          // Is reserved attribute name?
+          if (RESERVED_ATTRIBUTE_NAMES.includes(attribute.key)) {
+            appendCurrentModuleVariable();
+            findAndAppendVariableNames(rawLine);
+
+            if (
+              attribute.key ===
+              TerraformFile.Block.Module.ReservedAttributeName.Source
+            ) {
+              currentBlock.attributes.source = attribute.value.slice(1, -1);
+            }
+
+            // Keep all reserved attributes
+            return true;
+          }
+          // Attribute is variable
+          else {
             const isCommented = attribute.key.includes(USER_COMMENT_PREFIX);
-
             const variableName = isCommented
               ? attribute.key.replace(USER_COMMENT_PREFIX_REGEXP, '')
               : attribute.key;
+            const isCustom = attribute.value !== `var.${variableName}`;
 
-            const isPassThroughVariable =
-              attribute.value === `var.${variableName}`;
-
-            // Ignore non commented pass-through variables, we will rewrite them at the bottom of the file
-            if (!isCommented && isPassThroughVariable) {
-              return;
+            if (isCustom) {
+              findAndAppendVariableNames(rawLine);
             }
 
-            currentModule.variableAttributes.set(variableName, {
-              isCustom: !isPassThroughVariable,
-              isCommented,
-            });
+            appendCurrentModuleVariable();
 
-            // Skip line
-            if (isCommented && isPassThroughVariable) {
-              return;
+            // Keep only info about commented or custom variables
+            if (isCommented || isCustom) {
+              currentModuleVariableName = variableName;
+              currentModuleVariable = {
+                isCommented,
+                lines: [attribute.value],
+              };
             }
           }
-        }
-
-        for (const variableNameUsedInAttributeValue of matchAllRegexp(
-          lineValue,
-          VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP,
-        )) {
-          currentModule.variableNamesUsedInAttributeValues.add(
-            variableNameUsedInAttributeValue,
-          );
-        }
-      }
-    }
-
-    lines.push({
-      value: lineValue,
-      contextModuleName: currentModule?.name ?? null,
-    });
-  });
-
-  if (!modules.length) {
-    throw new Error('NO_MODULE_FOUND');
-  }
-
-  return {
-    folderPath,
-    filePath,
-    modules: (
-      await Promise.all(
-        modules.map(async (module) => ({
-          ...module,
-          variableFiles: await parseModuleVariableFiles(
-            path.resolve(folderPath, module.source),
-          ),
-        })),
-      )
-    ).reduce((acc, value) => acc.set(value.name, value), new Map()),
-    lines,
-  };
-}
-
-export async function parseOverrideVariablesFromGeneratedFile(
-  filePath: string,
-): Promise<Variables> {
-  return parseVariableFile(filePath, true);
-}
-
-async function parseModuleVariableFiles(
-  folderPath: string,
-): Promise<VariableFile[]> {
-  const fileNames: string[] = (
-    await fs.promises.readdir(folderPath)
-  ).filter((x) => x.startsWith('variables'));
-
-  return (
-    await Promise.all(
-      fileNames.map((x) => parseVariableFile(path.join(folderPath, x))),
-    )
-  ).map((variables, i) => ({
-    fileName: fileNames[i],
-    variables,
-  }));
-}
-
-async function parseVariableFile(
-  filePath: string,
-  filterOnOverride: boolean = false,
-): Promise<Map<string, string[]>> {
-  const variables = new Map<string, string[]>();
-  let currentVariableName: string | null = null;
-  let isOverride = !filterOnOverride;
-
-  await readFileLineByLine(
-    filePath,
-    (line: string) => {
-      if (filterOnOverride && line.startsWith(OVERRIDE_PATTERN)) {
-        isOverride = true;
-      } else {
-        const variableName = matchRegexp(line, VARIABLE_NAME_REGEXP);
-
-        if (variableName && isOverride) {
-          isOverride = !filterOnOverride;
-          currentVariableName = variableName;
-
-          variables.set(
-            variableName,
-            filterOnOverride ? [OVERRIDE_PATTERN, line] : [line],
-          );
-        } else if (currentVariableName) {
-          variables.set(
-            currentVariableName,
-            (variables.get(currentVariableName) ?? []).concat(line),
-          );
-
-          if (line.trimRight() === CLOSING_CURLY_BRACE) {
-            currentVariableName = null;
+        } else if (currentModuleVariable) {
+          if (!isEmptyLine || !isLastLineEmpty(currentModuleVariable.lines)) {
+            findAndAppendVariableNames(rawLine);
+            currentModuleVariable.lines.push(rawLine);
           }
         }
       }
-    },
-    {
-      skipEmptyLines: true,
+      // Inside body variable block
+      else if (currentBlock.kind === TerraformFile.Block.Kind.Variable) {
+        if (!isEmptyLine) {
+          currentBlock.lines.push(rawLine);
+        }
+
+        return true;
+      }
+
+      return false;
     },
   );
 
-  return variables;
+  return {
+    lines,
+    variableNames,
+    blocks,
+  };
+}
+
+function initBlock(
+  line: string,
+  isOverride: boolean,
+): TerraformFile.Block | null {
+  const groups = BLOCK_DECLARATION_REGEXP.exec(line);
+  const [kind, name] = groups?.slice(1) ?? [];
+
+  switch (kind) {
+    case 'module':
+      return {
+        kind: TerraformFile.Block.Kind.Module,
+        name,
+        attributes: {
+          source: '',
+          variables: new Map(),
+        },
+      };
+    case 'variable':
+      return {
+        kind: TerraformFile.Block.Kind.Variable,
+        name,
+        isOverride,
+        lines: [],
+      };
+    default:
+      return null;
+  }
 }
 
 function parseLineToFindAttribute(
@@ -220,19 +229,42 @@ function parseLineToFindAttribute(
   return null;
 }
 
-function matchRegexp(text: string, regexp: RegExp): string | null {
-  const matches = regexp.exec(text);
+function readFileLineByLine(
+  filePath: string,
+  onLineFn: (
+    line: string,
+    prevLine: TerraformFile.Content.Line | null,
+    isEmptyLine: boolean,
+  ) => boolean,
+): Promise<TerraformFile.Content.Line[]> {
+  return new Promise((resolve, reject) => {
+    const input = fs.createReadStream(filePath);
+    const lines: TerraformFile.Content.Line[] = [];
 
-  if (matches && matches.length > 1) {
-    return matches[1];
-  }
+    input.on('error', (err) => {
+      return reject(err);
+    });
 
-  return null;
+    const rl = createInterface({
+      input,
+    });
+
+    rl.on('line', (rawLine: string) => {
+      const prevLine = lines.length ? lines[lines.length - 1] : null;
+
+      if (onLineFn(rawLine.trimRight(), prevLine, rawLine.trim() === '')) {
+        lines.push({
+          value: rawLine,
+        });
+      }
+    });
+
+    rl.on('close', () => {
+      return resolve(lines);
+    });
+  });
 }
 
-function matchAllRegexp(text: string, regexp: RegExp): string[] {
-  return Array.from(text.matchAll(regexp)).reduce(
-    (acc, x) => acc.concat(x[1]),
-    [],
-  );
+function isLastLineEmpty(lines: string[]): boolean {
+  return lines.length > 0 && lines[lines.length - 1] === '';
 }
