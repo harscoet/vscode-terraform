@@ -12,7 +12,7 @@ const RESERVED_ATTRIBUTE_NAMES: string[] = Object.values(
   TerraformFile.Block.Module.ReservedAttributeName,
 );
 
-const BLOCK_DECLARATION_REGEXP = /(module|variable)\s*"(.+)"/;
+const BLOCK_DECLARATION_REGEXP = /(module|variable)\s*"?(\w+)/;
 const VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP = /var\.(\w+)/g;
 const USER_COMMENT_PREFIX_REGEXP = new RegExp(`${USER_COMMENT_PREFIX}+\\s*`);
 

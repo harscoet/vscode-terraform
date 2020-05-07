@@ -21,9 +21,6 @@ export async function run(
     inheritedVariableFileName,
   );
 
-  console.log('mainFilePath', mainFilePath);
-  console.log('inheritedVariableFilePath', inheritedVariableFilePath);
-
   const [mainFileContent, inheritedVariableFileContent] = await Promise.all([
     parseTerraformFileContent(mainFilePath),
     parseTerraformFileContent(inheritedVariableFilePath).catch((err) => {
