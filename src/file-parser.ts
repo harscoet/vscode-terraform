@@ -12,7 +12,7 @@ const RESERVED_ATTRIBUTE_NAMES: string[] = Object.values(
   TerraformFile.Block.Module.ReservedAttributeName,
 );
 
-const BLOCK_DECLARATION_REGEXP = /(module|variable)\s*"?(\w+)/;
+const BLOCK_DECLARATION_REGEXP = /(module|variable)\s*"?(\w+)"?\s*{/;
 const VARIABLE_NAME_FROM_ATTRIBUTE_VALUE_REGEXP = /var\.(\w+)/g;
 const USER_COMMENT_PREFIX_REGEXP = new RegExp(`${USER_COMMENT_PREFIX}+\\s*`);
 
@@ -66,15 +66,21 @@ export async function parseTerraformFileContent(
     }
   }
 
-  const lines = await readFileLineByLine(
+  const allLines = await readFileLineByLine(
     filePath,
     (
       rawLine: string,
-      prevLine: TerraformFile.Content.Line | null,
       isEmptyLine: boolean,
+      lines: TerraformFile.Content.Line[],
     ) => {
+      let lastLine = getLastLine(lines);
+
+      // Remove consecutive empty lines
+      if (isEmptyLine && lastLine && lastLine.value === '') {
+        return false;
+      }
       // Outside block body
-      if (!currentBlock) {
+      else if (!currentBlock) {
         if (rawLine.startsWith(OVERRIDE_DECORATOR)) {
           isOverride = true;
         } else {
@@ -86,8 +92,6 @@ export async function parseTerraformFileContent(
             findAndAppendVariableNames(rawLine);
           }
         }
-
-        return true;
       }
       // Closing line in block
       else if (rawLine === CLOSING_CURLY_BRACE) {
@@ -98,16 +102,21 @@ export async function parseTerraformFileContent(
           blocks.variables.set(currentBlock.name, currentBlock);
         }
 
-        if (prevLine) {
-          prevLine.bodyBlockLastLineContext = {
-            kind: currentBlock.kind,
-            name: currentBlock.name,
-          };
+        if (lastLine) {
+          if (lastLine.value === '') {
+            lines.pop();
+            lastLine = getLastLine(lines);
+          }
+
+          if (lastLine) {
+            lastLine.bodyBlockLastLineContext = {
+              kind: currentBlock.kind,
+              name: currentBlock.name,
+            };
+          }
         }
 
         currentBlock = null;
-
-        return true;
       }
       // Inside body module block
       else if (currentBlock.kind === TerraformFile.Block.Kind.Module) {
@@ -130,9 +139,6 @@ export async function parseTerraformFileContent(
             ) {
               currentBlock.attributes.source = attribute.value.slice(1, -1);
             }
-
-            // Keep all reserved attributes
-            return true;
           }
           // Attribute is variable
           else {
@@ -156,6 +162,8 @@ export async function parseTerraformFileContent(
                 lines: [attribute.value],
               };
             }
+
+            return isCustom && !isCommented;
           }
         } else if (currentModuleVariable) {
           if (!isEmptyLine || !isLastLineEmpty(currentModuleVariable.lines)) {
@@ -169,16 +177,14 @@ export async function parseTerraformFileContent(
         if (!isEmptyLine) {
           currentBlock.lines.push(rawLine);
         }
-
-        return true;
       }
 
-      return false;
+      return true;
     },
   );
 
   return {
-    lines,
+    lines: allLines,
     variableNames,
     blocks,
   };
@@ -233,8 +239,8 @@ function readFileLineByLine(
   filePath: string,
   onLineFn: (
     line: string,
-    prevLine: TerraformFile.Content.Line | null,
     isEmptyLine: boolean,
+    lines: TerraformFile.Content.Line[],
   ) => boolean,
 ): Promise<TerraformFile.Content.Line[]> {
   return new Promise((resolve, reject) => {
@@ -250,9 +256,7 @@ function readFileLineByLine(
     });
 
     rl.on('line', (rawLine: string) => {
-      const prevLine = lines.length ? lines[lines.length - 1] : null;
-
-      if (onLineFn(rawLine.trimRight(), prevLine, rawLine.trim() === '')) {
+      if (onLineFn(rawLine.trimRight(), rawLine.trim() === '', lines)) {
         lines.push({
           value: rawLine,
         });
@@ -266,5 +270,9 @@ function readFileLineByLine(
 }
 
 function isLastLineEmpty(lines: string[]): boolean {
-  return lines.length > 0 && lines[lines.length - 1] === '';
+  return getLastLine(lines) === '';
+}
+
+function getLastLine<T>(lines: T[]): T | null {
+  return lines.length ? lines[lines.length - 1] : null;
 }

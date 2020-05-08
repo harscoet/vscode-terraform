@@ -13,11 +13,17 @@ variable "hpa_min_replicas" {
   default = 5
 }
 
-module "api" {
+module "kubernetes" {
   source  = "./kubernetes-app"
   version = "1.1.0"
 
-  ### common
+  image_name                      = "${var.image_name}_api"
+  command                         = ["node", "dist/api", "--config", local.config_mount_path]
+  lifecycle_pre_stop_exec_command = var.graceful_shutdown ? ["sleep", "10"] : null
+  liveness_probe_enabled          = false
+  readiness_probe_http_get_path   = "/"
+  probe_port_index                = var.with_metrics_api ? 1 : 0
+
   ports = concat(
     [{
       name           = "http"
@@ -31,14 +37,6 @@ module "api" {
     }]
   )
 
-  config_map_env = {
-    NODE_ENV         = var.node_env
-    WITH_METRICS_API = var.with_metrics_api
-
-    PG_ENABLED  = var.pg_enabled
-    PG_DATABASE = var.instance_name
-  }
-
   config_map_files = {
     mount_path = local.config_mount_path
     data = {
@@ -48,6 +46,15 @@ module "api" {
     }
   }
 
+  config_map_env = {
+    NODE_ENV         = var.node_env
+    WITH_METRICS_API = var.with_metrics_api
+
+    PG_ENABLED  = var.pg_enabled
+    PG_DATABASE = var.instance_name
+  }
+
+  ### common
   instance_name        = var.instance_name
   instance_name_prefix = var.instance_name_prefix
   namespace            = var.namespace
@@ -55,12 +62,6 @@ module "api" {
   secret_files         = var.secret_files
 
   ### deployment
-  probe_port_index                     = var.with_metrics_api ? 1 : 0
-  image_name                           = "${var.image_name}_api"
-  command                              = ["node", "dist/api", "--config", local.config_mount_path]
-  lifecycle_pre_stop_exec_command      = var.graceful_shutdown ? ["sleep", "10"] : null
-  liveness_probe_enabled               = false
-  readiness_probe_http_get_path        = "/"
   deployment_enabled                   = var.deployment_enabled
   image_registry                       = var.image_registry
   image_tag                            = var.image_tag

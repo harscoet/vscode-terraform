@@ -1,52 +1,50 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import {
-  generateInheritedVariableFile,
-  generateMainFile,
-} from '../file-generator';
+import { generateChildVariableFile, generateMainFile } from '../file-generator';
 import { mainFileOutput, kubernetesAppOutputs } from './output/file-parser';
 import { newMapVariableBlocks, newMap } from './test-util';
 import { parseTerraformFileContent } from '../file-parser';
 import { TerraformFile } from '../types';
 
-const moduleVariableFiles = newMap<TerraformFile[]>({
-  [mainFileOutput.moduleBlockName]: [
-    newVariableFile('common', kubernetesAppOutputs.variablesCommonFileOutput),
-    newVariableFile(
-      'deployment',
-      kubernetesAppOutputs.variablesDeploymentFileOutput,
-    ),
-    newVariableFile('hpa', kubernetesAppOutputs.variablesHpaFileOutput),
-    newVariableFile('service', kubernetesAppOutputs.variablesServiceFileOutput),
-  ],
+const kubernetesVariableFiles = [
+  newVariableFile('common', kubernetesAppOutputs.variablesCommonFileOutput),
+  newVariableFile(
+    'deployment',
+    kubernetesAppOutputs.variablesDeploymentFileOutput,
+  ),
+  newVariableFile('hpa', kubernetesAppOutputs.variablesHpaFileOutput),
+  newVariableFile('service', kubernetesAppOutputs.variablesServiceFileOutput),
+];
+
+const variableFiles = newMap<TerraformFile[]>({
+  [mainFileOutput.moduleBlockName]: kubernetesVariableFiles,
 });
 
-test('generateInheritedVariableFile', async () => {
-  const generatedFilePath = getFilePath('.variables-inherited');
-  const expectedFilePath = getFilePath('variables-inherited');
-
-  await generateInheritedVariableFile(
-    generatedFilePath,
-    mainFileOutput,
-    {
-      variableNames: new Set(),
-      blocks: {
-        modules: new Map(),
-        variables: newMapVariableBlocks({
-          replicas: {
-            isOverride: true,
-            lines: ['  type    = number', '  default = 66'],
-          },
-          image_pull_policy: {
-            isOverride: false,
-            lines: ['  type    = string', '  default = null'],
-          },
-        }),
-      },
-      lines: [],
-    },
-    moduleVariableFiles,
+test('generateChildVariableFile', async () => {
+  const generatedFilePath = getFilePath('.variables');
+  const expectedFilePath = getFilePath('variables');
+  const moduleBlock = mainFileOutput.blocks.modules.get(
+    mainFileOutput.moduleBlockName,
   );
+
+  if (moduleBlock) {
+    await generateChildVariableFile(
+      generatedFilePath,
+      moduleBlock.attributes.variables,
+      mainFileOutput.variableNames,
+      newMapVariableBlocks({
+        replicas: {
+          isOverride: true,
+          lines: ['  type    = number', '  default = 66'],
+        },
+        image_pull_policy: {
+          isOverride: false,
+          lines: ['  type    = string', '  default = null'],
+        },
+      }),
+      kubernetesVariableFiles,
+    );
+  }
 
   const [generatedFileContent, expectedFileContent] = await Promise.all(
     [generatedFilePath, expectedFilePath].map((x) =>
@@ -71,7 +69,7 @@ test('generateMainFile', async () => {
         filePath: generatedFilePath,
         content: mainFileOutput,
       },
-      moduleVariableFiles,
+      variableFiles,
     ),
   ]);
 
@@ -88,7 +86,7 @@ test('generateMainFile', async () => {
       filePath: generatedFilePath,
       content: mainFileOutputBis,
     },
-    moduleVariableFiles,
+    variableFiles,
   );
 
   const generatedFileContentBis = await fs.promises.readFile(

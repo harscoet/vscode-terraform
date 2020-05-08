@@ -1,4 +1,4 @@
-### MODULE api FILE kubernetes-app/variables-common
+### common
 variable "instance_name" {
   type        = string
   description = "Instance name"
@@ -24,7 +24,7 @@ variable "secret_files" {
   default = null
 }
 
-### MODULE api FILE kubernetes-app/variables-deployment
+### deployment
 variable "deployment_enabled" {
   type    = bool
   default = true
@@ -121,7 +121,7 @@ variable "readiness_probe_failure_threshold" {
   default = 3
 }
 
-### MODULE api FILE kubernetes-app/variables-hpa
+### hpa
 variable "hpa_enabled" {
   type    = bool
   default = false
@@ -135,7 +135,7 @@ variable "hpa_target_cpu_utilization_percentage" {
   default = 80
 }
 
-### MODULE api FILE kubernetes-app/variables-service
+### service
 variable "service_enabled" {
   type    = bool
   default = true

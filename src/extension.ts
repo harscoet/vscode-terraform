@@ -1,9 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { run } from './main';
-
-const INHERITED_VARIABLE_FILE_NAME = 'variables-inherited.tf';
-const MAIN_FILE_NAME = 'main.tf';
+import { handleAllMainFiles } from './main';
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerTextEditorCommand(
@@ -12,15 +9,9 @@ export function activate(context: vscode.ExtensionContext) {
       const activeFolderPath = path.dirname(textEditor.document.fileName);
 
       try {
-        await run(
-          activeFolderPath,
-          MAIN_FILE_NAME,
-          INHERITED_VARIABLE_FILE_NAME,
-        );
+        await handleAllMainFiles(activeFolderPath);
 
-        vscode.window.showInformationMessage(
-          `File ${INHERITED_VARIABLE_FILE_NAME} generated`,
-        );
+        vscode.window.showInformationMessage('File generated');
       } catch (err) {
         vscode.window.showErrorMessage(err.message);
       }
