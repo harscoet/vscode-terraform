@@ -15,8 +15,6 @@ export async function generateMainFile(
   mainFile: TerraformFile,
   parentVariableFiles: Map<string, TerraformFile[]>,
 ) {
-  console.log('mainFile', mainFile.filePath);
-
   const {
     filePath,
     content: { lines, blocks },
@@ -163,7 +161,6 @@ export async function generateChildVariableFile(
   childVariableBlocks: Map<string, TerraformFile.Block.Variable>,
   parentVariableFiles: TerraformFile[],
 ): Promise<void> {
-  console.log('targetFilePath', targetFilePath);
   const { writeWithNewline, done } = writeFileLineByLine(targetFilePath);
 
   for (let i = 0; i < parentVariableFiles.length; i++) {
